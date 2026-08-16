@@ -1,0 +1,8 @@
+node_modules/
+.next/
+.crdb/
+.build/
+ingest.zip
+.env*
+!.env.example
+tsconfig.tsbuildinfo

@@ -1,0 +1,43 @@
+{
+  "name": "rewind",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db:local": "cockroach start-single-node --insecure --store=.crdb --listen-addr=localhost:26257 --http-addr=localhost:8080 --background",
+    "db:init": "tsx scripts/init.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "spike": "tsx scripts/spike.ts",
+    "poison": "tsx scripts/poison.ts",
+    "rewind": "tsx scripts/cli.ts",
+    "db:reset": "./infra/reset-local.sh",
+    "mcp": "tsx mcp/server.ts",
+    "sentinel": "tsx scripts/sentinel.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1111.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "next": "^15.1.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/aws-lambda": "^8.10.162",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "rewind": {
+      "command": "pnpm",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}
