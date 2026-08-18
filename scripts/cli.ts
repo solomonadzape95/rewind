@@ -3,7 +3,7 @@
  *
  *   pnpm rewind timeline
  *   pnpm rewind verdict <decision-id>
- *   pnpm rewind trace   <subject>
+ *   pnpm rewind trace   <subject> [up-to-hlc]
  *   pnpm rewind blast   <memory-id> <from-hlc> [to-hlc]
  *   pnpm rewind fix     <subject> <corrected content>
  *   pnpm rewind recheck <memory-id> <from-hlc> [to-hlc]
@@ -65,7 +65,11 @@ async function main() {
     }
 
     case "trace": {
-      const t = await trace(TENANT, req(args[0], "subject"));
+      // Optional second argument anchors the search at a past moment. Without
+      // it the walk starts at now and finds how the belief came to hold its
+      // CURRENT value — which is the wrong question once anyone has corrected
+      // the memory, and silently so.
+      const t = await trace(TENANT, req(args[0], "subject"), { upTo: args[1] });
       rule();
       console.log(`TRACE: ${t.subject}`);
       rule();

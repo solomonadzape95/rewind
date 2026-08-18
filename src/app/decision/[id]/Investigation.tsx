@@ -32,7 +32,13 @@ async function call<T>(body: Record<string, unknown>): Promise<T> {
  * Each step unlocks the next — trace needs the subject the verdict accused,
  * blast needs the window and memory id the trace found.
  */
-export function Investigation({ decisionId }: { decisionId: string }) {
+export function Investigation({
+  decisionId,
+  memoryHlc,
+}: {
+  decisionId: string;
+  memoryHlc: string;
+}) {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [blast, setBlast] = useState<BlastRadius | null>(null);
@@ -76,7 +82,16 @@ export function Investigation({ decisionId }: { decisionId: string }) {
             active={busy === "trace"}
             disabled={busy !== null || !accused}
             onClick={run("trace", async () =>
-              setTrace(await call<Trace>({ step: "trace", subject: accused! })),
+              // Anchored at the decision, not at now. Without `upTo` this asks
+              // "how does this belief hold its CURRENT value", which is a
+              // different question and gives a different answer the moment
+              // anybody corrects the memory — including us, one panel down.
+              // Anchored, it asks how the belief THIS DECISION READ came to
+              // hold that value, which is the question under investigation and
+              // stays answerable no matter what happened since.
+              setTrace(
+                await call<Trace>({ step: "trace", subject: accused!, upTo: memoryHlc }),
+              ),
             )}
           />
           <Step

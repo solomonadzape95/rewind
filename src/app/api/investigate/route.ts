@@ -16,6 +16,7 @@ export async function POST(req: Request) {
     decisionId?: string;
     subject?: string;
     content?: string;
+    upTo?: string;
     memoryId?: string;
     fromHlc?: string;
     toHlc?: string | null;
@@ -26,7 +27,9 @@ export async function POST(req: Request) {
       case "verdict":
         return NextResponse.json(await verdict(TENANT, req_(body.decisionId, "decisionId")));
       case "trace":
-        return NextResponse.json(await trace(TENANT, req_(body.subject, "subject")));
+        return NextResponse.json(
+          await trace(TENANT, req_(body.subject, "subject"), { upTo: body.upTo }),
+        );
       case "blast":
         return NextResponse.json(
           await blastRadius(

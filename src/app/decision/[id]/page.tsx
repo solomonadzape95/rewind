@@ -64,7 +64,7 @@ export default async function DecisionPage({
         </Panel>
       </section>
 
-      <Investigation decisionId={d.decision_id} />
+      <Investigation decisionId={d.decision_id} memoryHlc={d.memory_hlc} />
     </div>
   );
 }
