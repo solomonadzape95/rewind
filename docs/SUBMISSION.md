@@ -336,6 +336,228 @@ exactly what makes them worth reporting back:
 
 ---
 
+---
+
+# Additional info form — field by field
+
+The "Additional info" step (4/5). Every answer below is ready to paste. Fields marked
+**⚠ BLOCKED** need something that does not exist yet.
+
+## ⚠ URL to your functional demo application *(required)*
+
+**BLOCKED — nothing is deployed yet.** This is the one field you cannot fake; see
+`docs/DEPLOY.md` for the steps. It will look like:
+
+```
+https://rewind-<something>.vercel.app
+```
+
+## Testing credentials or instructions for your functional demo app
+
+```
+No credentials, login, or API key are required — open the URL and everything is
+already seeded.
+
+What you are looking at: a B2B SaaS support agent that approves customer refunds.
+Its memory holds the policy "Enterprise refund limit is $500 per incident." A
+document ingested through the low-trust `inbound/` channel silently rewrote that
+belief to $5,000, and the agent then over-approved five refunds without raising a
+single error.
+
+Walk the incident in this order:
+
+1. On the home page, drag the timeline scrubber. This reconstructs the agent's
+   entire belief state at any past instant using CockroachDB's MVCC history and
+   one AS OF SYSTEM TIME clause. There is no snapshot or audit table behind it.
+2. Open the $4,200 decision (the last row, in red).
+3. Click "Replay". It re-runs the agent against the exact memory state that
+   decision read, several times, and rules: BAD MEMORY, not bad reasoning.
+   Takes ~20 seconds — it is invoking a model, not replaying a recording.
+4. Click "Trace the write". Watch the bisection probes narrow. This binary-searches
+   MVCC to pin the moment the belief changed, then names the S3 document that did
+   it and its trust score. No change log is consulted; there isn't one.
+5. Click "Blast radius" for the other decisions that read the poisoned belief and
+   the total dollar exposure.
+6. Click "Fix & re-replay" to restore the value bisection recovered and re-run every
+   affected decision against corrected memory. The outcomes flip.
+
+GET /api/health reports the cluster's live gc.ttlseconds, which is the real limit on
+how far back any of this can see.
+
+To run it locally instead, the README has a complete no-account path: local
+CockroachDB plus local models, no cloud credentials of any kind.
+```
+
+## URL to your open source and public code repository *(required)*
+
+```
+https://github.com/solomonadzape95/rewind
+```
+
+## URL to your open-source license file *(required)*
+
+```
+https://github.com/solomonadzape95/rewind/blob/main/LICENSE
+```
+
+MIT. GitHub already detects it and shows "MIT" in the About section.
+
+## Which CockroachDB tools are used? *(required, pick ≥2)*
+
+Tick these three:
+
+- ✅ **CockroachDB Cloud Managed MCP Server**
+- ✅ **Distributed Vector Indexing**
+- ✅ **ccloud CLI (Agent-Ready)**
+
+**Do not tick "Agent Skills Repo (Open Source)"** unless you change something first.
+Rewind ships its *own* agent skill (`skills/rewind-forensics/SKILL.md`, written to the
+Agent Skills Specification) but does not consume anything from
+`github.com/cockroachlabs/cockroachdb-skills`. Ticking it would be claiming a tool the
+repo does not use, and a judge reading the code would find that in a minute. Three of
+four already clears the minimum of two.
+
+## Which AWS Services are used? *(required, pick ≥1)*
+
+- ✅ **AWS Lambda**
+- ✅ **Amazon S3**
+- ✅ **Amazon Bedrock**
+
+## How the components are meaningfully integrated *(required)*
+
+```
+CockroachDB is not a datastore this project writes to — it is the mechanism the
+product is built out of.
+
+MVCC + AS OF SYSTEM TIME. Rewind keeps no history of its own: no audit table, no
+event log, no snapshots. Memory rows are mutated in place with UPDATE and never
+appended, so the `memory` table looks like it has no past while MVCC holds all of
+it. Every forensic answer is an ordinary query at a past timestamp. The linchpin is
+one column, `decision.memory_hlc`: at the instant the agent reads memory, the
+cluster's hybrid-logical-clock timestamp is captured inside the same read-only
+transaction as the recall, so both observe exactly one MVCC snapshot. That decimal
+drops straight into AS OF SYSTEM TIME, which is what makes replay evidence rather
+than reconstruction. Bisection then binary-searches MVCC itself — about 20 probes
+narrow a 7-day window to the second — to find the write that changed a belief.
+Remove CockroachDB and the project is an event-sourcing system that does not exist.
+
+Cloud Managed MCP Server. The agent has no database connection. It reads memory
+through the managed MCP endpoint's SQL tool, discovered at runtime via tools/list
+rather than hardcoded (src/lib/mcp.ts). This forced a real design problem: MCP has
+no sessions, so the transaction that pins the clock read to the recall cannot exist.
+The fix is to send both as a single statement, which is its own implicit transaction
+and therefore its own single snapshot — the guarantee survives the transport change.
+
+Distributed Vector Indexing. `CREATE VECTOR INDEX ... ON memory (tenant_id, embedding)`
+— tenant-prefixed, so the index enforces multi-tenant isolation rather than a WHERE
+clause. It serves live recall only. Forensic replay deliberately uses exact
+cosine_distance at the historical timestamp, because an approximate,
+background-maintained index makes no guarantee about what a historical read returns.
+Approximation is fine for recall; it is not fine for evidence.
+
+ccloud CLI. infra/provision.sh scripts the cluster and widens gc.ttlseconds before a
+single row is written — ordering that is load-bearing, since raising it later cannot
+resurrect collected history.
+
+AWS Lambda + S3 are the ingestion pipeline and the attack surface. An S3 object
+triggers a Lambda that extracts durable beliefs and writes each one in place, tagged
+with the source_id of the document that produced it. That join is what lets forensics
+name a culprit hours later — without it, bisection can say when a belief changed but
+never why, and "the number changed at 15:19" is not an incident report. Trust is a
+property of the key prefix: inbound/ scores 0.2, policies/ scores 1.0. There is
+deliberately no guard rejecting low-trust writes, because real pipelines do not have
+one — which is why this class of failure reaches production.
+
+Amazon Bedrock is two services inside that Lambda, not a checkbox: Claude extracts
+the beliefs, and Titan Text Embeddings V2 produces the vectors, since Claude does not
+embed. It is what makes the deployed pipeline work at all — the local default is
+Ollama, and localhost is not reachable from Lambda.
+
+CHANGEFEED closes the loop: scripts/sentinel.ts watches for a low-trust source
+overwriting a high-confidence policy belief and alerts within seconds, turning
+after-the-fact forensics into live detection.
+```
+
+## What date did you start this project? *(required, MM-DD-YY)*
+
+```
+08-15-26
+```
+
+The first commit squashes three days of work, so the git history alone understates
+this — `SPEC.md` and `LICENSE` are both dated Aug 15, and `SPEC.md` says so in its
+header. **Confirm the submission period opened on or before Aug 15** before entering
+it; if it opened later, say so plainly rather than adjusting the date.
+
+## Pre-existing code or work incorporated *(required)*
+
+```
+None. Every line was written during the submission period, starting 08-15-26.
+
+Standard tooling and libraries only: Next.js, React, Tailwind, node-postgres, the
+Model Context Protocol TypeScript SDK, the Anthropic SDK's Bedrock client, the AWS
+SDK, esbuild, tsx, and Vitest — all installed from their public registries and used
+as published.
+
+Development tools: Claude Code (Claude Opus 5) was used as a coding assistant
+throughout — architecture discussion, implementation, code review, and
+documentation. All design decisions, the data model, and the forensic approach were
+directed by me; no code was carried in from a prior project, starter template, or
+another hackathon.
+
+The models the application itself runs on are configuration, not incorporated work:
+it defaults to local Ollama models (qwen2.5:7b and nomic-embed-text) and can be
+pointed at Claude on Amazon Bedrock, or any OpenAI-compatible endpoint, with one
+environment variable.
+```
+
+## Which AI tools have you leveraged? *(required)*
+
+```
+Claude Code (Claude Opus 5) — used throughout for architecture discussion,
+implementation, code review, and documentation. It was most valuable as a reviewer:
+it caught that widening gc.ttlseconds on the database is not sufficient because
+historical name resolution reads the system ranges too, which is the single most
+important thing this project learned.
+
+Claude on Amazon Bedrock — inside the product, for extracting durable beliefs from
+ingested documents and for the replay engine that re-runs recorded decisions.
+
+Amazon Titan Text Embeddings V2 — vector embeddings for semantic recall on the
+deployed path.
+
+Ollama (qwen2.5:7b, nomic-embed-text) — the local default, so the entire project
+runs with no account, no API key, and no cost.
+```
+
+## Level of learning derived from the project
+
+The dropdown currently reads **Moderate**. Consider raising it — the project
+surfaced two genuinely non-obvious CockroachDB behaviors that are written up in the
+README and the feedback field (system-range GC bounding the forensic horizon, and
+object names resolving as of the read timestamp so dropped data stays visible to
+historical reads). Your call; pick the option that honestly matches.
+
+## Did you gain AI value you can use in your career?
+
+**Yes** — already selected.
+
+## Submitter type / country / organization
+
+Individual · Nigeria · organization name blank. Already correct.
+
+## Optional: architecture diagram upload
+
+`docs/architecture.md` holds the diagram as Mermaid, which the upload field will not
+take — it wants PDF, PNG, or JPG. Either render that Mermaid to PNG, or skip the
+field; it is optional and the README covers the same ground.
+
+## Optional: feedback on CockroachDB AI tools
+
+Already drafted — see the feedback section above in this document. Paste it whole.
+
+---
+
 ## Submission checklist
 
 - [ ] **Public repo** — pushed to GitHub, MIT licence present (`LICENSE`), README
