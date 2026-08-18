@@ -31,7 +31,9 @@ else
 fi
 
 echo "==> connection string"
-URL="$(ccloud cluster sql "$CLUSTER" --connection-string)"
+# --connection-url, not --connection-string: the latter is not a real flag and
+# fails with "unknown flag", which is what made this script unusable.
+URL="$(ccloud cluster sql "$CLUSTER" --connection-url --database defaultdb --quiet | tail -1)"
 [ -n "$URL" ] || { echo "could not read connection string"; exit 1; }
 
 # ccloud hands back a URL pointing at defaultdb; Rewind lives in its own database.

@@ -336,8 +336,15 @@ the verdict engine already assumes no provider is deterministic and replays seve
 ## Deploying
 
 ```sh
-./infra/provision.sh              # CockroachDB Cloud cluster, GC window, schema
-export DATABASE_URL='...'         # printed by provision.sh
+# A cluster you already created in the console:
+export CRDB_CLUSTER=... CRDB_SQL_USER=... CRDB_SQL_PASSWORD=...
+./infra/cloud-setup.sh            # cert, database, GC window, schema
+
+# ...or have the repo create one:
+./infra/provision.sh
+
+export DATABASE_URL='...'         # printed by either script
+export PGSSLROOTCERT="$HOME/.postgresql/root.crt"
 ./infra/deploy-lambda.sh          # ingestion Lambda + S3 trigger
 
 aws s3 cp docs/inbound/q3-vendor-policy-update.md s3://rewind-demo/inbound/

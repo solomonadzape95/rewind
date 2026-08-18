@@ -1,0 +1,35 @@
+flowchart TB
+    subgraph aws["AWS"]
+        s3["Amazon S3<br/>rewind-demo/<br/>inbound/ · policies/"]
+        lambda["AWS Lambda<br/>rewind-ingest<br/>S3 trigger"]
+        bedrock["Amazon Bedrock<br/>Claude: extract beliefs<br/>Titan V2: embeddings"]
+    end
+
+    subgraph agent_layer["Agent layer"]
+        agent["Support agent<br/>approves refunds"]
+        console["Rewind Console<br/>Next.js"]
+        responder["Incident-response agent<br/>Claude Code / Desktop"]
+    end
+
+    subgraph crdb["CockroachDB Cloud"]
+        mcp["Managed MCP Server<br/>the agent's tool surface"]
+        cspann["C-SPANN vector index<br/>live semantic recall"]
+        mvcc["MVCC + AS OF SYSTEM TIME<br/>the entire product"]
+        feed["CHANGEFEED<br/>live poison detection"]
+    end
+
+    s3 -->|ObjectCreated| lambda
+    lambda -->|extract beliefs| bedrock
+    lambda -->|"UPDATE memory (in place)"| mvcc
+
+    agent -->|MCP tool calls| mcp
+    mcp --> cspann
+    cspann --> mvcc
+
+    console -->|"AS OF SYSTEM TIME &lt;memory_hlc&gt;"| mvcc
+    responder -->|"rewind_* MCP tools"| console
+
+    feed -->|low-trust overwrite| sentinel["Sentinel<br/>alert + blast radius"]
+    mvcc --> feed
+
+    style mvcc stroke-width:3px

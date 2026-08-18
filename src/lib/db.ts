@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 
 // CockroachDB speaks the Postgres wire protocol, so `pg` works unchanged.
@@ -7,7 +8,27 @@ const connectionString =
   process.env.DATABASE_URL ??
   "postgresql://root@localhost:26257/rewind?sslmode=disable";
 
-export const pool = new Pool({ connectionString, max: 10 });
+/**
+ * TLS for CockroachDB Cloud.
+ *
+ * Cloud connection strings carry `sslmode=verify-full` and the console hands you
+ * a CA certificate to go with it. `pg` is not libpq: it does not read
+ * `~/.postgresql/root.crt` on its own, so a URL that works in `cockroach sql`
+ * can still fail here with a certificate error that looks like a network
+ * problem. Point PGSSLROOTCERT at the downloaded cert and it is loaded
+ * explicitly; without it we fall back to Node's system trust store, which is
+ * enough for clusters whose certificate chains to a public CA.
+ */
+function ssl(): { ca: string } | undefined {
+  const certPath = process.env.PGSSLROOTCERT;
+  if (!certPath) return undefined;
+  if (!existsSync(certPath)) {
+    throw new Error(`PGSSLROOTCERT points at a file that does not exist: ${certPath}`);
+  }
+  return { ca: readFileSync(certPath, "utf8") };
+}
+
+export const pool = new Pool({ connectionString, max: 10, ssl: ssl() });
 
 // Without a listener, an idle client whose connection dies (node restarted,
 // network blipped) raises an unhandled 'error' event, which takes the process

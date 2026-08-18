@@ -51,11 +51,24 @@ let cached: Promise<Client> | null = null;
 async function connect(): Promise<Client> {
   if (cached) return cached;
   cached = (async () => {
+    // The managed endpoint routes by cluster, so the cluster id is not optional
+    // even when the token is valid — without it the server has no idea which of
+    // your clusters to run the statement against. The console's Connect dialog
+    // shows both values together for exactly this reason.
     const token = process.env.CRDB_MCP_TOKEN;
+    const clusterId = process.env.CRDB_MCP_CLUSTER_ID;
+    if (!clusterId) {
+      throw new Error(
+        "CRDB_MCP_CLUSTER_ID is required. Copy it from the CockroachDB Cloud console: " +
+          "Connect -> Model Context Protocol (MCP), the `mcp-cluster-id` header value.",
+      );
+    }
+
+    const headers: Record<string, string> = { "mcp-cluster-id": clusterId };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl()), {
-      requestInit: token
-        ? { headers: { Authorization: `Bearer ${token}` } }
-        : undefined,
+      requestInit: { headers },
     });
     const client = new Client(
       { name: "rewind-agent", version: "0.1.0" },

@@ -12,15 +12,38 @@
 set -euo pipefail
 
 FN="${REWIND_FN:-rewind-ingest}"
-BUCKET="${REWIND_BUCKET:-rewind-demo}"
+# S3 bucket names are globally unique across all AWS accounts, so a fixed
+# default collides the moment anyone else runs this. Scoping it to the account
+# keeps it unique without needing a flag.
+BUCKET="${REWIND_BUCKET:-}"
 REGION="${AWS_REGION:-us-east-1}"
 ROLE_NAME="${FN}-role"
 
+# Preflight, with errors that say what to do rather than which line failed.
 command -v aws >/dev/null || { echo "aws cli not found: brew install awscli"; exit 1; }
-: "${DATABASE_URL:?export DATABASE_URL first — see infra/provision.sh}"
 
-ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+if ! ACCOUNT="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"; then
+  echo "AWS credentials are not configured (aws sts get-caller-identity failed)." >&2
+  echo "Run 'aws configure', or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY." >&2
+  exit 1
+fi
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  cat >&2 <<'MSG'
+DATABASE_URL is not set — the function has nowhere to write memory.
+
+For a cluster you created in the CockroachDB Cloud console:
+    export CRDB_CLUSTER=<name> CRDB_SQL_USER=<user> CRDB_SQL_PASSWORD=<password>
+    ./infra/cloud-setup.sh          # prints the DATABASE_URL to export
+
+For one this repo provisions:
+    ./infra/provision.sh
+MSG
+  exit 1
+fi
 ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}"
+BUCKET="${BUCKET:-rewind-demo-${ACCOUNT}}"
+echo "==> account ${ACCOUNT}, region ${REGION}, bucket ${BUCKET}"
 
 echo "==> bundle"
 rm -rf .build && mkdir -p .build
@@ -64,8 +87,17 @@ if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
 fi
 
 echo "==> bucket"
-aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
-  aws s3 mb "s3://${BUCKET}" --region "$REGION"
+if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+  # us-east-1 is the one region that must NOT be given a LocationConstraint;
+  # every other region requires one, and the failure is an opaque
+  # InvalidLocationConstraint either way round.
+  if [ "$REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$BUCKET" --region us-east-1
+  else
+    aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+      --create-bucket-configuration "LocationConstraint=${REGION}"
+  fi
+fi
 
 # The function's model configuration, passed through from the deploy shell.
 #

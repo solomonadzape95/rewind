@@ -28,11 +28,53 @@ model, re-seed the cloud cluster with that model rather than mixing widths.
 
 ## 1. Cluster
 
+**If you already made one in the console** (the common case), don't run
+`provision.sh` — it creates a new cluster. Use:
+
 ```sh
 ccloud auth login
-./infra/provision.sh                 # creates the cluster, widens BOTH GC windows, applies schema
+export CRDB_CLUSTER=oilier-mouse          # the name in the console
+export CRDB_SQL_USER=solomon              # Connect dialog -> Select SQL user
+export CRDB_SQL_PASSWORD='...'            # Connect dialog -> Connection string
+./infra/cloud-setup.sh
+```
+
+It fetches the CA certificate, creates the `rewind` database, widens the GC window
+as far as the plan permits, applies the schema, and prints the `DATABASE_URL` and
+`PGSSLROOTCERT` to export. Both are needed: `pg` is not libpq and does not read
+`~/.postgresql/root.crt` on its own, so a URL that works in `cockroach sql` can
+still fail here with a certificate error that looks like a network problem.
+
+**To have the repo create a cluster instead:**
+
+```sh
+ccloud auth login
+./infra/provision.sh
 export DATABASE_URL='...'            # printed by provision.sh
 ```
+
+### ⚠ Check your plan before you rely on the forensic horizon
+
+The whole product is bounded by `gc.ttlseconds`, and **on some managed plans that
+value is the provider's to set, not yours** — `ALTER DATABASE ... CONFIGURE ZONE`
+is refused and the GC window stays at whatever the platform chose. A Basic /
+serverless cluster is the usual case.
+
+This does not break Rewind; it bounds it. Every forensic query still works inside
+whatever window the plan gives you, and `cloud-setup.sh` reports what it got
+instead of assuming. But it decides something you need to decide *before*
+recording: if the window is short, the seed → poison → record cycle has to fit
+inside it, and a judge opening the demo URL a day later will find the history
+collected and the trace failing.
+
+Check it as the first thing after setup:
+
+```sh
+psql "$DATABASE_URL" -c "SHOW ZONE CONFIGURATION FROM DATABASE rewind;"
+```
+
+If `gc.ttlseconds` is small and cannot be raised, either compress the demo
+timeline to fit inside it, or move to a plan that allows zone configuration.
 
 `provision.sh` widens the database *and* the system ranges. Both are required —
 historical name resolution reads the system descriptor tables at the past

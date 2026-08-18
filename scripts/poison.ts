@@ -21,6 +21,11 @@ import { TENANT } from "../src/lib/tenant";
 
 const KEY = "inbound/q3-vendor-policy-update.md";
 
+// The recorded source URI must match the bucket the deployed Lambda writes from,
+// or the console shows a document path that never existed. Same default as
+// infra/deploy-lambda.sh.
+const BUCKET = process.env.REWIND_BUCKET ?? "rewind-demo";
+
 const REQUESTS = [
   "Acme Corp is requesting a $1,800 refund for a service outage last month.",
   "Customer is asking for a $2,400 refund citing repeated downtime.",
@@ -40,7 +45,7 @@ async function main() {
   const { rows } = await pool.query<{ source_id: string }>(
     `INSERT INTO ingestion_source (tenant_id, kind, uri, excerpt, trust_score)
      VALUES ($1, 'md', $2, $3, $4) RETURNING source_id`,
-    [TENANT, `s3://rewind-demo/${KEY}`, text.slice(0, 2000), trust],
+    [TENANT, `s3://${BUCKET}/${KEY}`, text.slice(0, 2000), trust],
   );
 
   for (const b of beliefs) {

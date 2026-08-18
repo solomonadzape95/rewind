@@ -21,23 +21,48 @@
  * back. So the effective forensic horizon is the MINIMUM of the database's TTL
  * and the system ranges' TTL — and widening one without the other buys nothing.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
+
+/** Same CA handling as src/lib/db.ts — see the note there. */
+function sslOptions(): { ca: string } | undefined {
+  const certPath = process.env.PGSSLROOTCERT;
+  if (!certPath) return undefined;
+  if (!existsSync(certPath)) {
+    throw new Error(`PGSSLROOTCERT points at a file that does not exist: ${certPath}`);
+  }
+  return { ca: readFileSync(certPath, "utf8") };
+}
 
 const url =
   process.env.DATABASE_URL ??
   "postgresql://root@localhost:26257/rewind?sslmode=disable";
 
+/**
+ * Rewrite a connection URL's database name.
+ *
+ * The old version string-replaced "/rewind" with "/defaultdb", which silently
+ * did nothing to a CockroachDB Cloud URL — the console hands you one ending in
+ * `/defaultdb`, so the replace found no match, and the schema was then applied
+ * to defaultdb instead of rewind. Parsing the URL makes the two cases identical.
+ */
+function withDatabase(raw: string, database: string): string {
+  const u = new URL(raw);
+  u.pathname = `/${database}`;
+  return u.toString();
+}
+
 async function main() {
-  const bootstrapUrl = url.replace(/\/rewind(\?|$)/, "/defaultdb$1");
-  const bootstrap = new Client({ connectionString: bootstrapUrl });
+  const bootstrapUrl = withDatabase(url, "defaultdb");
+  const targetUrl = withDatabase(url, "rewind");
+  const bootstrap = new Client({ connectionString: bootstrapUrl, ssl: sslOptions() });
   await bootstrap.connect();
   await bootstrap.query("CREATE DATABASE IF NOT EXISTS rewind");
   await widenSystemRanges(bootstrap);
   await bootstrap.end();
 
-  const db = new Client({ connectionString: url });
+  const db = new Client({ connectionString: targetUrl, ssl: sslOptions() });
   await db.connect();
   // The vector width is substituted rather than hardcoded: different embedding
   // models emit different dimensions (nomic-embed-text 768, Titan V2 1024), and
@@ -50,9 +75,8 @@ async function main() {
     .replaceAll("${EMBED_DIM}", String(dim));
   await db.query(sql);
 
-  const { rows } = await db.query("SHOW ZONE CONFIGURATION FROM DATABASE rewind");
   console.log(`schema applied (VECTOR(${dim})).\n`);
-  console.log(rows[0]?.raw_config_sql ?? rows[0]);
+  await reportHorizon(db);
   await db.end();
 }
 
@@ -91,6 +115,37 @@ async function widenSystemRanges(client: Client): Promise<void> {
       `\nranges' gc.ttlseconds sits (4h by default) is your REAL forensic horizon,` +
       `\nregardless of what the rewind database is set to. Verify with /api/health.\n`,
   );
+}
+
+/**
+ * Print the forensic horizon this cluster will actually give you.
+ *
+ * Worth doing at init rather than leaving to discovery: on a managed plan the
+ * zone configuration may be the provider's to set, and a cluster that refuses
+ * the widening looks completely healthy right up until a historical query fails
+ * hours later with an error that names a system range and never mentions
+ * retention.
+ */
+async function reportHorizon(client: Client): Promise<void> {
+  try {
+    const { rows } = await client.query<{ raw_config_sql: string }>(
+      "SHOW ZONE CONFIGURATION FROM DATABASE rewind",
+    );
+    const raw = rows[0]?.raw_config_sql ?? "";
+    const ttl = Number(/gc\.ttlseconds\s*=\s*(\d+)/.exec(raw)?.[1] ?? 0);
+    if (ttl) {
+      console.log(`database gc.ttlseconds = ${ttl} (${(ttl / 3600).toFixed(1)}h)`);
+    } else {
+      console.log(raw || "(no zone configuration returned)");
+    }
+  } catch (e) {
+    console.warn(
+      `could not read the zone configuration: ${e instanceof Error ? e.message : String(e)}\n` +
+        "On plans where zone configuration belongs to the provider, the GC window is\n" +
+        "theirs to set and your forensic horizon is whatever they chose. Check\n" +
+        "/api/health against the deployed console to see the value in effect.",
+    );
+  }
 }
 
 main().catch((e) => {

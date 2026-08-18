@@ -5,7 +5,7 @@ flowchart TB
     subgraph aws["AWS"]
         s3["Amazon S3<br/>rewind-demo/<br/>inbound/ · policies/"]
         lambda["AWS Lambda<br/>rewind-ingest<br/>S3 trigger"]
-        bedrock["Amazon Bedrock<br/>(optional model path)"]
+        bedrock["Amazon Bedrock<br/>Claude: extract beliefs<br/>Titan V2: embeddings"]
     end
 
     subgraph agent_layer["Agent layer"]
