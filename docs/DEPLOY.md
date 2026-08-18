@@ -126,8 +126,12 @@ MCP Server rather than a direct connection, which turns the strongest
 requirements claim from "implemented" into "demonstrated":
 
 ```sh
-vercel env add CRDB_MCP_TOKEN production       # from the Cloud console
+vercel env add CRDB_MCP_CLUSTER_ID production  # console: Connect -> MCP, the mcp-cluster-id value
+vercel env add CRDB_MCP_TOKEN production       # console: API key auth
 ```
+
+Both are required — the managed endpoint routes by cluster, so a token on its own
+does not identify which cluster to run against.
 
 `/api/health` reports `memoryAccess`, so you can confirm it took effect:
 `"cockroachdb-cloud-mcp"` rather than `"direct-sql"`.
