@@ -40,6 +40,208 @@ the failure was bad reasoning or bad memory.
 
 ---
 
+# The project description
+
+Devpost's description field uses these seven headings. Written out to paste.
+
+## Inspiration
+
+Every AI observability tool on the market captures what an agent **said** — the
+prompt, the tokens, the tool calls, the latency. Not one captures what it
+**believed**.
+
+That gap only matters when something goes wrong, and then it matters completely.
+An agent approves a $4,200 refund against a $500 policy. The logs show a normal,
+confident approval citing policy correctly. Nothing looks broken. To answer for
+it — to an engineer, an auditor, or a court — you have to reconstruct the
+agent's memory as of that exact instant, and the honest answer is usually that
+nobody can.
+
+The standard fix is to build event sourcing: append-only belief logs, snapshot
+tables, replay infrastructure. Months of work, and a second source of truth that
+can drift from the first.
+
+Then the obvious thing: **CockroachDB already stores every version of every
+row.** MVCC keeps them for the length of the GC window, and `AS OF SYSTEM TIME`
+queries them in one clause. The history isn't missing. Nobody was pointing at it.
+
+## What it does
+
+Rewind takes one bad agent decision and answers three questions, then closes the
+incident.
+
+1. **Was this bad reasoning, or bad memory?** It replays the agent against the
+   exact memory state it read — not a reconstruction — several times, and rules.
+   Crucially, it **refuses to rule** when the prompt or model has drifted since
+   the decision, because a forensics tool that returns a confident wrong answer
+   is worse than no tool.
+2. **Which write caused it?** It binary-searches MVCC itself. Roughly 20 probes
+   narrow a 7-day window to the second, then resolves that instant to the
+   ingested document that wrote the belief, with the trust score of the channel
+   it arrived through.
+3. **What else did it affect?** It enumerates every other decision that read the
+   belief while it was wrong and prices the exposure — "5 decisions, $12,400" —
+   because a count alone doesn't get acted on.
+
+Then it restores the value the bisection *proved* was there before the
+poisoning, and re-replays every affected decision against the corrected memory.
+That's memory regression testing, shown rather than described.
+
+**Rewind stores no history of its own.** No audit table, no event log, no
+snapshots. Delete every table it queries except `memory` and `decision` and it
+still works.
+
+## How we built it
+
+The whole thing rests on **one column**: `decision.memory_hlc`.
+
+At the instant the agent reads memory, the cluster's hybrid-logical-clock
+timestamp is captured *inside the same read-only transaction as the recall*, so
+both observe exactly one MVCC snapshot. That decimal drops straight into
+`AS OF SYSTEM TIME`, so replay reproduces the agent's memory **exactly** rather
+than approximately. Capture it outside the transaction and a concurrent
+ingestion can land in the gap — replay would then reproduce a state the agent
+never saw, and the evidence would be quietly wrong.
+
+Two design rules follow, and both are load-bearing:
+
+- **Memory rows are mutated in place, never appended.** The table looks like it
+  has no history; MVCC has all of it. The moment we keep our own version table,
+  CockroachDB stops being load-bearing and the thesis collapses.
+- **`gc.ttlseconds` is widened before any data is written.** Raising it later
+  does not resurrect collected history.
+
+Around that:
+
+- **CockroachDB Cloud Managed MCP Server** — the agent has no database
+  connection at all. It reads memory through MCP tools, discovered at runtime
+  rather than hardcoded.
+- **Distributed Vector Indexing (C-SPANN)** — live semantic recall, prefixed by
+  tenant so the index itself enforces multi-tenant isolation.
+- **ccloud CLI** — scripted provisioning, GC windows widened before any row exists.
+- **AWS Lambda + S3** — the ingestion pipeline, and the attack surface. An S3
+  object triggers a Lambda that extracts durable beliefs and writes each one in
+  place, tagged with the `source_id` of the document that produced it. That join
+  is what lets forensics name a culprit hours later.
+- **Amazon Bedrock** — optional model path, deliberately optional: the claim is
+  about the memory layer, not about whose model reads it.
+- **CHANGEFEED** — a sentinel that flags a low-trust source overwriting a
+  high-confidence policy belief, live.
+
+Two retrieval paths, on purpose. Live recall uses the approximate C-SPANN index.
+Forensic replay uses exact brute-force `cosine_distance` at the historical
+timestamp. **Approximation is fine for recall; it is not fine for evidence.**
+
+## Challenges we ran into
+
+**The GC window trap that isn't documented.** Widening `gc.ttlseconds` on the
+database is necessary and *not sufficient*. CockroachDB resolves object names as
+of the read timestamp, so every historical query also reads the `system`
+descriptor tables at that past timestamp — and those ranges keep their own zone
+config, stuck at the 4h default. Past four hours, reads fail with:
+
+```
+batch timestamp ... must be after replica GC threshold (r10: /Table/{5-6})
+```
+
+Note what that does not say: not your table, not your database, not retention.
+The memory rows are still there holding seven days of perfectly readable
+history; the query fails because the *name* can no longer be resolved that far
+back. It reads like a storage bug at the exact moment you're trying to prove
+there isn't one. It cost us a seeded timeline before we understood it. The
+effective horizon is `min(database TTL, system range TTL)`, and both provisioning
+paths now widen both.
+
+**Preserving the snapshot guarantee across MCP.** On a direct connection, a
+transaction pins the clock read and the recall to one snapshot. MCP has no
+sessions — each tool call is independent and could be routed anywhere — so
+issuing them as two calls reintroduces, at the transport layer, precisely the
+race the transaction exists to prevent. The fix: send *one statement* that
+returns `cluster_logical_timestamp()` as a column of the recall itself. One
+statement is its own implicit transaction, therefore its own single snapshot.
+
+**Diagnosing at incident time, not after cleanup.** The first verdict engine
+compared memory "then" against "now" — which finds nothing, because when the
+engineer opens the tool the poisoned belief is still live. It would have blamed
+the model for every real poisoning. What *is* knowable at incident time is
+provenance: was the belief rewritten shortly before the decision, by a source
+less trusted than the one it replaced? Two historical reads and a trust
+comparison, no provenance table.
+
+**Bisection on beliefs that oscillate.** A plain binary search over the window
+converges on an arbitrary transition, so a belief that changed several times
+could pin a months-old write for today's incident. It walks backwards in
+doubling steps first, which guarantees the *most recent* transition.
+
+**Dropped data stays visible.** `DROP DATABASE` doesn't clear the slate —
+`AS OF SYSTEM TIME` before the drop resolves the old descriptor and reads the
+old tables. Correct behaviour, genuinely surprising, and it means rehearsing the
+demo requires discarding the store entirely.
+
+## Accomplishments that we're proud of
+
+**It stores nothing and answers everything.** No audit table, no event log, no
+snapshots — and it still reconstructs a belief state from 46 hours earlier,
+exactly, in one SQL clause.
+
+**It refuses to answer when it can't answer honestly.** If the prompt hash or
+model ID has drifted since the decision, the verdict engine returns
+`REPLAY_UNSOUND` and explains why, instead of issuing a confident ruling on a
+changed experiment. Most tools would guess.
+
+**The thesis is an executable test.** `tests/forensics.integration.test.ts`
+asserts the premise the whole project rests on against a live cluster, and CI
+starts a real CockroachDB node to run it. If it fails, nothing else is worth
+running.
+
+**It produces a dollar figure.** Blast radius outputs "5 decisions, $12,400
+approved on the bad belief" — the form an incident report has to take before
+anyone acts on it.
+
+**The fix is as auditable as the attack.** Remediation is an ordinary in-place
+`UPDATE`, so it becomes another MVCC version. Six months later, the same
+bisection finds both.
+
+## What we learned
+
+**MVCC is a product surface, not an implementation detail.** Every database with
+multi-version concurrency control is already storing the history teams build
+event-sourcing systems to duplicate. CockroachDB is unusual in exposing a
+coordinate that is both cheap to store and exactly re-readable.
+
+**The GC window is a retention policy.** This looked like the project's biggest
+limitation and turned out to be its best production-readiness argument: set
+`gc.ttlseconds` to your regulatory retention requirement — seven years for a
+lender — and forensic replay becomes a config value rather than an engineering
+project.
+
+**Evidence has a higher bar than recall.** The instinct was to use the vector
+index everywhere. But an approximate, background-maintained index makes no
+guarantee about what a historical read returns, and "approximately what the
+agent saw" is not evidence. Knowing *why* you chose a slower path matters more
+than the path.
+
+**Honest tools have to be able to say no.** The most valuable behaviour we built
+is a refusal.
+
+## What's next for Rewind
+
+- **Prevention, not just forensics.** The CHANGEFEED sentinel detects low-trust
+  overwrites seconds after they commit. The next step is a quarantine path:
+  hold the write, alert, and require a human to promote it.
+- **Belief-level diffing across model versions.** Replay the same decision corpus
+  against a new model to see which decisions change *before* shipping it — memory
+  regression testing as a CI gate.
+- **Longer horizons than the GC window.** For retention beyond what MVCC can hold
+  economically, tier cold history out while keeping the same query interface.
+- **Beyond refunds.** The scenario is a support agent, but the machinery is
+  domain-agnostic: any agent whose memory is a set of beliefs with provenance.
+  Clinical decision support, trading, content moderation.
+- **Multi-tenant forensics at scale.** Tenant isolation is enforced at the index
+  today; the forensic paths need the same treatment under real load.
+
+---
+
 ## Which CockroachDB tools, and how
 
 | Tool | Where it is used | What it does here |
@@ -99,9 +301,10 @@ effort.
 
 ---
 
-## Feedback on CockroachDB's AI tools (optional field — fill it, it's cheap goodwill)
+## Feedback on CockroachDB's AI tools (optional Devpost field)
 
-Points worth making, all encountered while building:
+Every point below was hit while building this, and each cost real time — which is
+exactly what makes them worth reporting back:
 
 - `AS OF SYSTEM TIME` accepting the raw `cluster_logical_timestamp()` decimal is
   what makes exact replay possible at all. Nothing else in the ecosystem offers

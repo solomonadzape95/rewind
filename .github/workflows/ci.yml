@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Build
+        run: pnpm build
+
+      # The unit tests run anywhere. The integration suite asserts the premise
+      # the whole project rests on — that MVCC alone can answer what a belief
+      # was at a past instant — and it can only do that against a real cluster,
+      # so CI starts one rather than skipping the tests that matter most.
+      - name: Start CockroachDB
+        run: |
+          curl -fsSL "https://binaries.cockroachdb.com/cockroach-v26.2.5.linux-amd64.tgz" \
+            | tar -xz
+          sudo cp cockroach-v26.2.5.linux-amd64/cockroach /usr/local/bin/
+          cockroach start-single-node --insecure --store=.crdb \
+            --listen-addr=localhost:26257 --http-addr=localhost:8080 --background
+          for i in $(seq 1 30); do
+            cockroach sql --insecure --host=localhost:26257 -e "SELECT 1" >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+      # Widens the GC window on the database AND the system ranges before any
+      # data exists. Both are required: historical queries resolve object names
+      # against the system descriptor tables at the past timestamp, so a wide
+      # database on top of narrow system ranges still has a narrow horizon.
+      - name: Apply schema
+        run: pnpm db:init
+
+      - name: Test
+        run: pnpm test

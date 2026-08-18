@@ -363,8 +363,10 @@ lambda/ingest.ts     S3 -> Bedrock -> CockroachDB
 infra/               ccloud provisioning, Lambda deploy, local reset
 docs/inbound/        the document that causes the incident
 docs/architecture.md diagram and the two read paths
+docs/DEPLOY.md       standing up the demo URL, and the trap that breaks it
 docs/SUBMISSION.md   the Devpost copy sheet
 docs/VIDEO.md        the shot list
+.github/workflows/   CI — typecheck, build, and the thesis test on a real cluster
 ```
 
 ## License
