@@ -6,9 +6,16 @@ import { remediate, recheck } from "@/lib/remediate";
 import { TENANT } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
-// Replay runs the model several times and bisection issues ~20 queries; the
-// default serverless timeout is not enough.
-export const maxDuration = 300;
+
+// Replay runs the model several times and bisection issues ~20 queries, so the
+// 10s serverless default is not enough.
+//
+// 60 rather than 300 on purpose: Vercel's Hobby plan caps maxDuration at 60 and
+// FAILS THE BUILD above it. A submission that deploys everywhere at 60s beats
+// one that needs a Pro account to exist at all. On Pro, raise it — but only if
+// the model behind it is slow enough to need it; a hosted model (Groq, Bedrock)
+// completes three replay runs well inside a minute.
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   const body = (await req.json()) as {
