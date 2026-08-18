@@ -16,7 +16,9 @@
     "db:reset": "./infra/reset-local.sh",
     "mcp": "tsx mcp/server.ts",
     "sentinel": "tsx scripts/sentinel.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "horizon": "tsx scripts/probe-horizon.ts",
+    "check:bedrock": "tsx scripts/check-bedrock.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.32.4",
