@@ -213,7 +213,7 @@ That is the default — no configuration needed. Other providers are one env var
 |---|---|
 | **Ollama** (default) | nothing; `REWIND_MODEL_ID` to change the model |
 | Groq / OpenRouter / DeepSeek / Together | `REWIND_PROVIDER=openai`, `REWIND_BASE_URL`, `REWIND_API_KEY`, `REWIND_MODEL_ID` |
-| Claude on Bedrock | `REWIND_PROVIDER=bedrock`, `AWS_REGION` (paid, per token) |
+| Claude on Bedrock | `REWIND_PROVIDER=bedrock`, `AWS_REGION`, `REWIND_EMBED_DIM=1024` (paid, per token) |
 | No model at all | `REWIND_OFFLINE=1` — deterministic stubs for development |
 
 Anything OpenAI-compatible works through the same adapter. If you switch embedding models, set
@@ -307,6 +307,31 @@ same value within a very short window can bracket an older transition than the t
 one. Closing that gap entirely would cost a linear scan of the window; real policy beliefs change
 rarely rather than several times a second. Repeated rehearsals are what actually produce the
 pattern, which is what `db:reset` is for.
+
+## The deployed pipeline needs a model that lives in AWS
+
+Ollama is the right default on a laptop and useless inside Lambda — `localhost:11434`
+is not your machine once the function is running in AWS. So the ingestion pipeline has a
+second model path, and it is two services rather than one:
+
+- **Claude on Bedrock** extracts durable beliefs from each document, through the Anthropic
+  SDK's Bedrock client rather than the legacy `InvokeModel` path, with the response shape
+  enforced server-side by structured outputs.
+- **Titan Text Embeddings V2** produces the vectors, because Claude does not do embeddings.
+  That one genuinely is an `InvokeModel` call.
+
+```sh
+export REWIND_PROVIDER=bedrock
+export AWS_REGION=us-east-1
+export REWIND_EMBED_DIM=1024      # Titan V2's default width; 256 and 512 also work
+pnpm db:reset && pnpm db:init     # the schema's vector width is fixed at init
+```
+
+`REWIND_EMBED_DIM` has to match the width the schema was created at — a mismatch is
+rejected on insert, and `deploy-lambda.sh` forwards whatever you set so the function and
+the database cannot disagree. Note that `temperature` is not sent on this path: it was
+removed on current Claude models and is rejected outright. Replay never depended on it —
+the verdict engine already assumes no provider is deterministic and replays several times.
 
 ## Deploying
 

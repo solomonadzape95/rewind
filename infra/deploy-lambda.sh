@@ -24,13 +24,17 @@ ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/${ROLE_NAME}"
 
 echo "==> bundle"
 rm -rf .build && mkdir -p .build
-# The @aws-sdk glob is quoted: unquoted it is a shell glob, and zsh aborts the
-# whole command when it matches nothing. The AWS SDK ships in the Lambda runtime,
-# so bundling it would only inflate the artifact.
+# Only client-s3 is externalised, not the whole @aws-sdk namespace. The runtime
+# ships the SDK, but which clients it ships is a property of the runtime version
+# rather than a guarantee — and a client that turns out to be missing fails at
+# require() on the first invocation, in a function that looked like it deployed
+# fine. S3 is safe to leave out; bedrock-runtime gets bundled. The pattern is
+# quoted because unquoted it is a shell glob, and zsh aborts the whole command
+# when it matches nothing.
 pnpm exec esbuild lambda/ingest.ts \
   --bundle --platform=node --target=node22 --format=cjs \
   --outfile=.build/index.js \
-  '--external:@aws-sdk/*'
+  '--external:@aws-sdk/client-s3'
 (cd .build && zip -qr ../ingest.zip .)
 
 echo "==> IAM role"
@@ -63,7 +67,32 @@ echo "==> bucket"
 aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null || \
   aws s3 mb "s3://${BUCKET}" --region "$REGION"
 
-ENV_VARS="Variables={DATABASE_URL=${DATABASE_URL},AWS_REGION_OVERRIDE=${REGION}}"
+# The function's model configuration, passed through from the deploy shell.
+#
+# WITHOUT THIS THE LAMBDA DEPLOYS AND THEN FAILS EVERY INVOCATION. The model
+# layer defaults to Ollama at http://localhost:11434 — correct on a laptop,
+# nothing at all inside Lambda — so a function shipped without a provider set
+# hangs until its 300s timeout on the first document it ingests. Bedrock is the
+# default here because it is the only provider reachable from Lambda without
+# extra credentials.
+PROVIDER="${REWIND_PROVIDER:-bedrock}"
+if [ "$PROVIDER" = "ollama" ]; then
+  echo "REWIND_PROVIDER=ollama cannot work inside Lambda (localhost is not your laptop)." >&2
+  echo "Use bedrock, or an OpenAI-compatible endpoint via REWIND_BASE_URL." >&2
+  exit 1
+fi
+
+# Titan V2 emits 1024 dimensions by default; the schema's vector width is fixed
+# at db:init. Mismatched widths are rejected on insert, so carry the value the
+# database was actually created with rather than letting each side default.
+ENV_KV="DATABASE_URL=${DATABASE_URL},AWS_REGION_OVERRIDE=${REGION},REWIND_PROVIDER=${PROVIDER}"
+[ -n "${REWIND_MODEL_ID:-}" ]    && ENV_KV="${ENV_KV},REWIND_MODEL_ID=${REWIND_MODEL_ID}"
+[ -n "${REWIND_EMBED_DIM:-}" ]   && ENV_KV="${ENV_KV},REWIND_EMBED_DIM=${REWIND_EMBED_DIM}"
+[ -n "${REWIND_EMBED_MODEL_ID:-}" ] && ENV_KV="${ENV_KV},REWIND_EMBED_MODEL_ID=${REWIND_EMBED_MODEL_ID}"
+[ -n "${REWIND_BASE_URL:-}" ]    && ENV_KV="${ENV_KV},REWIND_BASE_URL=${REWIND_BASE_URL}"
+[ -n "${REWIND_API_KEY:-}" ]     && ENV_KV="${ENV_KV},REWIND_API_KEY=${REWIND_API_KEY}"
+
+ENV_VARS="Variables={${ENV_KV}}"
 
 echo "==> function"
 if aws lambda get-function --function-name "$FN" >/dev/null 2>&1; then

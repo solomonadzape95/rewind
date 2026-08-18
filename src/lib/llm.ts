@@ -58,6 +58,21 @@ export async function chatJson<T>(params: {
   schema: object;
   maxTokens?: number;
 }): Promise<T> {
+  // Bedrock speaks the Messages API, not an OpenAI-compatible one, and rejects
+  // the `temperature` this path sends. It also enforces the schema server-side
+  // rather than asking for it in prose, so it takes the raw schema and skips
+  // the instructions below entirely.
+  if (provider() === "bedrock") {
+    const { bedrockChatJson } = await import("./bedrock");
+    return bedrockChatJson<T>({
+      model: CHAT_MODEL,
+      system: params.system,
+      user: params.user,
+      schema: params.schema,
+      maxTokens: params.maxTokens ?? 2048,
+    });
+  }
+
   const system = `${params.system}
 
 Reply with a single JSON object and nothing else — no prose, no markdown fences.
@@ -104,6 +119,13 @@ function stripFences(s: string): string {
 
 /** Embed text. Ollama's native endpoint is used when pointed at Ollama. */
 export async function embedText(text: string): Promise<number[]> {
+  // Claude does not produce embeddings, so the Bedrock path uses Titan V2 via
+  // InvokeModel rather than the Messages API. Same width contract either way.
+  if (provider() === "bedrock") {
+    const { bedrockEmbed } = await import("./bedrock");
+    return bedrockEmbed(text, EMBED_DIM);
+  }
+
   const url = baseUrl();
   const res = await fetch(`${url}/embeddings`, {
     method: "POST",

@@ -261,7 +261,7 @@ policy**, and **CHANGEFEED** (`scripts/sentinel.ts`) for live detection.
 |---|---|---|
 | **AWS Lambda** | `lambda/ingest.ts`, `infra/deploy-lambda.sh` | The ingestion pipeline. S3 object → text → model-extracted beliefs → in-place `UPDATE` to memory, tagged with the `source_id` of the document that wrote it. This is the attack surface, deliberately unguarded. |
 | **Amazon S3** | `docs/inbound/`, bucket `rewind-demo` | Source documents, including the injected one that causes the incident. Trust is a property of the key prefix: `inbound/` → 0.2, `policies/` → 1.0. |
-| **Amazon Bedrock** | `src/lib/llm.ts` (`REWIND_PROVIDER=bedrock`) | Optional model path for the agent and the extractor. Optional on purpose: the claim is about the memory layer, not about whose model reads it, and the project must run with no cloud account. |
+| **Amazon Bedrock** | `src/lib/bedrock.ts`, wired into `src/lib/llm.ts` | Two services, not one: **Claude** extracts durable beliefs from each ingested document (via the Anthropic SDK's Bedrock client, with structured outputs enforcing the response shape), and **Titan Text Embeddings V2** produces the vectors, since Claude does not embed. This is what makes the deployed pipeline work at all — the local default is Ollama, and `localhost` is not reachable from Lambda. |
 
 Minimum is 2 CockroachDB tools + 1 AWS service. Rewind uses 4 + 3.
 
