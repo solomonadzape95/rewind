@@ -344,12 +344,18 @@ export CRDB_CLUSTER=... CRDB_SQL_USER=... CRDB_SQL_PASSWORD=...
 ./infra/provision.sh
 
 export DATABASE_URL='...'         # printed by either script
-export PGSSLROOTCERT="$HOME/.postgresql/root.crt"
 ./infra/deploy-lambda.sh          # ingestion Lambda + S3 trigger
 
 aws s3 cp docs/inbound/q3-vendor-policy-update.md s3://rewind-demo/inbound/
 aws logs tail /aws/lambda/rewind-ingest --follow
 ```
+
+`PGSSLROOTCERT` is deliberately not set anywhere here. CockroachDB Cloud's certificate chains
+to a public CA, so `sslmode=verify-full` in `DATABASE_URL` verifies against the system trust
+store on its own — and `pg` ignores an `ssl` option passed beside a connection string anyway
+(see the note in `src/lib/db.ts`). A cluster with a private CA appends `&sslrootcert=<path>` to
+the URL instead. Do not put a laptop path in a deploy environment: it is a file the build host
+does not have.
 
 The Lambda needs no VPC — CockroachDB Cloud is publicly reachable over TLS, and putting the
 function in a VPC would force a NAT gateway just to reach Bedrock. Its IAM policy is scoped to the

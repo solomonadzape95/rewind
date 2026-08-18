@@ -21,19 +21,13 @@
  * back. So the effective forensic horizon is the MINIMUM of the database's TTL
  * and the system ranges' TTL — and widening one without the other buys nothing.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 
-/** Same CA handling as src/lib/db.ts — see the note there. */
-function sslOptions(): { ca: string } | undefined {
-  const certPath = process.env.PGSSLROOTCERT;
-  if (!certPath) return undefined;
-  if (!existsSync(certPath)) {
-    throw new Error(`PGSSLROOTCERT points at a file that does not exist: ${certPath}`);
-  }
-  return { ca: readFileSync(certPath, "utf8") };
-}
+// TLS comes from the connection string alone — an `ssl` option passed next to a
+// connectionString is overwritten by what the URL parses to. See the long note
+// in src/lib/db.ts; a private CA belongs in the URL as `&sslrootcert=...`.
 
 const url =
   process.env.DATABASE_URL ??
@@ -56,13 +50,13 @@ function withDatabase(raw: string, database: string): string {
 async function main() {
   const bootstrapUrl = withDatabase(url, "defaultdb");
   const targetUrl = withDatabase(url, "rewind");
-  const bootstrap = new Client({ connectionString: bootstrapUrl, ssl: sslOptions() });
+  const bootstrap = new Client({ connectionString: bootstrapUrl });
   await bootstrap.connect();
   await bootstrap.query("CREATE DATABASE IF NOT EXISTS rewind");
   await widenSystemRanges(bootstrap);
   await bootstrap.end();
 
-  const db = new Client({ connectionString: targetUrl, ssl: sslOptions() });
+  const db = new Client({ connectionString: targetUrl });
   await db.connect();
   // The vector width is substituted rather than hardcoded: different embedding
   // models emit different dimensions (nomic-embed-text 768, Titan V2 1024), and

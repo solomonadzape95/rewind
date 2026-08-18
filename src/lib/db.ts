@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { Pool, type PoolClient } from "pg";
 
 // CockroachDB speaks the Postgres wire protocol, so `pg` works unchanged.
@@ -9,26 +8,29 @@ const connectionString =
   "postgresql://root@localhost:26257/rewind?sslmode=disable";
 
 /**
- * TLS for CockroachDB Cloud.
+ * TLS is configured entirely by the connection string — do not pass an `ssl`
+ * option next to it.
  *
- * Cloud connection strings carry `sslmode=verify-full` and the console hands you
- * a CA certificate to go with it. `pg` is not libpq: it does not read
- * `~/.postgresql/root.crt` on its own, so a URL that works in `cockroach sql`
- * can still fail here with a certificate error that looks like a network
- * problem. Point PGSSLROOTCERT at the downloaded cert and it is loaded
- * explicitly; without it we fall back to Node's system trust store, which is
- * enough for clusters whose certificate chains to a public CA.
+ * `pg` builds its config as `Object.assign({}, config, parse(connectionString))`
+ * (connection-parameters.js), so anything the URL implies WINS over what you
+ * pass alongside it. Our cloud URLs carry `sslmode=verify-full`, which makes
+ * pg-connection-string emit its own `ssl` object, silently discarding a
+ * hand-built `{ ca }`. The old code here read `PGSSLROOTCERT` off disk and
+ * passed it as `ssl` — that CA never reached the socket, and the only thing the
+ * variable actually did was throw at import time when the path did not exist,
+ * which failed `next build` on Vercel (the laptop path was in the deploy env).
+ *
+ * What works instead:
+ *   - CockroachDB Cloud's certificate chains to a public CA, so `verify-full`
+ *     verifies against Node's system trust store with no extra configuration.
+ *     This is the deployed path; nothing to set.
+ *   - A cluster with a private CA puts it IN THE URL, libpq-style:
+ *     `?sslmode=verify-full&sslrootcert=/path/root.crt`. pg-connection-string
+ *     reads that file itself, and being part of the URL it survives the merge.
+ *
+ * `sslmode=disable` in the local URL likewise resolves to no TLS on its own.
  */
-function ssl(): { ca: string } | undefined {
-  const certPath = process.env.PGSSLROOTCERT;
-  if (!certPath) return undefined;
-  if (!existsSync(certPath)) {
-    throw new Error(`PGSSLROOTCERT points at a file that does not exist: ${certPath}`);
-  }
-  return { ca: readFileSync(certPath, "utf8") };
-}
-
-export const pool = new Pool({ connectionString, max: 10, ssl: ssl() });
+export const pool = new Pool({ connectionString, max: 10 });
 
 // Without a listener, an idle client whose connection dies (node restarted,
 // network blipped) raises an unhandled 'error' event, which takes the process
